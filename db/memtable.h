@@ -1,0 +1,75 @@
+//
+// Created by 123456 on 2023/3/9.
+//
+
+#ifndef SIMPLELSMTREE_MEMTABLE_H
+#define SIMPLELSMTREE_MEMTABLE_H
+
+#include <skiplist.h>
+#include <string_view>
+
+
+namespace lsmtree {
+
+class MemTable {
+public:
+    MemTable();
+
+    enum class Status : uint8_t {
+        kSuccess = 0,
+        kNotFound,
+        kFound,
+        kError,
+        kFull
+    };
+
+    enum : uint16_t {
+        kMaxNumsPerTable = 20001
+    };
+
+    ///
+    Status Add(const std::string& key, const std::string_view& value);
+
+    ///
+    Status Delete(const std::string& key);
+
+    ///
+    Status Search(const std::string& key, std::string_view& value) const;
+
+    Status Dump(const std::string& filename);
+
+    ///
+    uint32_t GetCurNums() const ;
+
+    ///
+    void Ref();
+
+    void UnRef();
+
+private:
+    class KeyCompartor {
+    public:
+        int operator()(const std::string& lhs, const std::string& rhs) const {
+            if(lhs == rhs) {
+                return 0;
+            } else if (lhs > rhs) {
+                return 1;
+            } else {
+                return -1;
+            }
+        }
+    };
+
+    using Table = SkipList<std::string, std::string, KeyCompartor>;
+
+    ///destructed only no thread working on this memtable, don't allow destruct from extern.
+    ~MemTable();
+
+    Table table_;
+    std::atomic<int> refs_;    //thread nums working on this memtable now
+    std::atomic<uint32_t> node_counts_;
+};
+
+}  //namespace lsmtree
+
+#endif //SIMPLELSMTREE_MEMTABLE_H

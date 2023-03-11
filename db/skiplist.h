@@ -47,7 +47,6 @@ public:
 
     ///Returns whether the specified key value already exists in the skiplist
     bool Exist(const Key& key, Node** target) const ;
-
 public:
     class Iterator {
     public:
@@ -87,8 +86,8 @@ public:
             }
         }
 
-        const Value& operator*() {
-            return cur_->GetValue();
+        Node* operator*() {
+            return cur_;
         }
 
     private:

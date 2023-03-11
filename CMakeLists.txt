@@ -41,8 +41,8 @@ set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
 #add_executable(lsm main.cpp db/skiplist.h)
 
 include_directories(db)
-#include_directories(vm)
-#include_directories(iodevice)
+include_directories(utils)
+include_directories(table)
 
 add_subdirectory(test)
 
