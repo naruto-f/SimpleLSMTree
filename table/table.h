@@ -8,14 +8,18 @@
 #include <table_format.h>
 
 #include <vector>
+#include <memory>
+#include <cache.h>
 
 namespace lsmtree {
 
-class Cache;
+class Block;
 
 class SSTable {
+    using CacheId_t = uint64_t;
+    using L2Cache = Cache<CacheId_t, std::shared_ptr<Block>>;
 public:
-    SSTable(const char* filename, Cache* cache);
+    SSTable(const char* filename, L2Cache* cache);
 
     int Get(const std::string_view& key, std::string_view& value) const;
 
@@ -33,7 +37,7 @@ private:
 private:
     struct Footer footer_;
     std::vector<IndexHandler> data_index_block_;
-    Cache* cache_;
+    L2Cache* cache_;
 };
 
 }  //namespace lsmtree

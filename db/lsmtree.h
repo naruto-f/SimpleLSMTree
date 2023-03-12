@@ -6,21 +6,41 @@
 #define SIMPLELSMTREE_LSMTREE_H
 
 #include <db.h>
+#include <cache.h>
+
+#include <thread>
+#include <condition_variable>
+#include <mutex>
+#include <bloom.h>
 
 namespace lsmtree {
 
+
+class Block;
+class MemTable;
+
 class LsmTree : public Db {
 public:
-    void Add(const std::string_view& key, const std::string_view& value) override;
+    LsmTree();
 
-    void Delete(const std::string_view& key) override;
+    void Add(const std::string& key, const std::string& value) override;
 
-    void Get(const std::string_view& key, std::string_view& value) override;
+    void Delete(const std::string& key) override;
 
+    bool Get(const std::string& key, std::shared_ptr<std::string>& value) override;
 
 private:
+    using CacheId_t = uint64_t;
+    using L1Cache = Cache<std::string, std::shared_ptr<std::string>>;
+    using L2Cache = Cache<CacheId_t, std::shared_ptr<Block>>;
 
-
+    std::unique_ptr<SimpleBloomFilter> bloom_;
+    std::unique_ptr<MemTable> table_;
+    L1Cache line_cache_;
+    L2Cache block_cache_;
+    std::thread background_worker;
+    std::condition_variable cond_;
+    mutable std::mutex mutex_;
 };
 
 };  //namespace lsmtree

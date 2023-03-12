@@ -5,7 +5,7 @@
 #ifndef SIMPLELSMTREE_DB_H
 #define SIMPLELSMTREE_DB_H
 
-#include <string_view>
+#include <memory>
 
 namespace lsmtree {
 
@@ -16,11 +16,11 @@ public:
 
     virtual void Close() = 0;
 
-    virtual void Add(const std::string_view& key, const std::string_view& value) = 0;
+    virtual void Add(const std::string& key, const std::string& value) = 0;
 
-    virtual void Delete(const std::string_view& key) = 0;
+    virtual void Delete(const std::string& key) = 0;
 
-    virtual void Get(const std::string_view& key, std::string_view& value) = 0;
+    virtual bool Get(const std::string& key, std::shared_ptr<std::string>& value) = 0;
 };
 
 };  //namespace lsmtree
