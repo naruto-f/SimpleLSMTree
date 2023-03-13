@@ -17,7 +17,7 @@ namespace {
 
 }
 
-lsmtree::SSTable::SSTable(const char *filename, Cache* cache) : cache_(cache) {
+lsmtree::SSTable::SSTable(const char *filename, L2Cache* cache) : cache_(cache) {
     std::ifstream& reader = reader_.GetReader();
 
     reader.open(filename, std::ios::in | std::ios::binary);
@@ -56,6 +56,9 @@ void lsmtree::SSTable::ReadDataIndexBlock() {
 
     IndexHandler data_index_handler;
     while (reader.tellg() < footer_.data_index_handle_.offset_ + footer_.data_index_handle_.size_) {
+        //read block_id(same as cache_id)
+        reader.read(reinterpret_cast<char*>(data_index_handler.id_), 8);
+
         int key_size = 0;
         reader.read(reinterpret_cast<char*>(&key_size), 8);
         assert(key_size != 0);
@@ -71,10 +74,22 @@ void lsmtree::SSTable::ReadDataIndexBlock() {
     }
 }
 
-int lsmtree::SSTable::Get(const std::string_view &key, std::string_view& value) const {
+int lsmtree::SSTable::Get(const std::string_view &key, std::shared_ptr<std::string>& value) const {
     int block_index = GetBlockIndexOfKeyMayIn(key);
     if (block_index == -1) {
         return -1;
+    }
+
+    int res = -1;
+    std::string_view value_view(nullptr);
+    std::shared_ptr<Block> block_ptr(nullptr);
+    if (cache_->Search(data_index_block_[block_index].id_, block_ptr)) {
+        res = block_ptr->Get(key, value_view);
+        if (res == 0) {
+            value = std::make_shared<std::string>(value_view.data(), value_view.size());
+        }
+
+        return res;
     }
 
     uint64_t block_size = data_index_block_[block_index].block_handle_.size_;
@@ -82,17 +97,19 @@ int lsmtree::SSTable::Get(const std::string_view &key, std::string_view& value) 
     char* block_begin = new char[block_size];
 
     std::ifstream& reader = reader_.GetReader();
-    assert(Valid());
 
     reader.seekg(block_offset, std::ios::beg);
     reader.read(block_begin, block_size);
-
-    std::shared_ptr<Block> block_ptr = std::make_shared<Block>(block_begin, block_size);
-    cache_->Insert(block_ptr);
-
-    int res = block_ptr->Get(key, value);
-
     assert(Valid());
+
+    std::shared_ptr<Block> new_block_ptr = std::make_shared<Block>(data_index_block_[block_index].id_, block_begin, block_size);
+    cache_->Insert(data_index_block_[block_index].id_, block_ptr);
+
+    res = block_ptr->Get(key, value_view);
+    if (res == 0) {
+        value = std::make_shared<std::string>(value_view.data(), value_view.size());
+    }
+
     return res;
 }
 

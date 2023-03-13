@@ -21,7 +21,7 @@ class SSTable {
 public:
     SSTable(const char* filename, L2Cache* cache);
 
-    int Get(const std::string_view& key, std::string_view& value) const;
+    int Get(const std::string_view& key, std::shared_ptr<std::string>& value) const;
 
     bool Valid() const;
 
@@ -32,7 +32,6 @@ private:
 
     ///find the block index key may in use Binary search
     int GetBlockIndexOfKeyMayIn(const std::string_view& key) const;
-
 
 private:
     struct Footer footer_;

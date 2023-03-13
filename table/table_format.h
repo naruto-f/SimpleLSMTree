@@ -24,6 +24,7 @@ struct BlockHandler {
 
 struct IndexHandler {
     BlockHandler block_handle_;
+    uint64_t id_;
     std::string key_;
 };
 

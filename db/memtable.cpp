@@ -93,7 +93,7 @@ void lsmtree::MemTable::UnRef() {
     }
 }
 
-lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename) {
+lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, uint64_t* start_block_id) const {
     Writer file_writer;
     std::ofstream& writer = file_writer.GetWriter();
     writer.open(filename, std::ios::out | std::ios::binary);
@@ -127,6 +127,7 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename) {
         key_size = (*iter)->GetKey().size();
         value = (*iter)->GetValue().c_str();
         std::size_t value_size = (*iter)->GetValue().size();
+
 
         writer.write(&flag, sizeof(flag));
         if (writer.fail()) {
@@ -176,6 +177,12 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename) {
     ///write data index block to file.
     auto block_num = block_size.size();
     for (int i = 0; i < block_num; ++i) {
+        writer.write(reinterpret_cast<char*>(start_block_id), sizeof(uint64_t));
+        if (writer.fail()) {
+            return Status::kError;
+        }
+        ++(*start_block_id);
+
         auto last_key_info = last_key_of_blocks[i];
         writer.write(reinterpret_cast<char*>(&last_key_info.second), sizeof(uint64_t));
         if (writer.fail()) {

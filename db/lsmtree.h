@@ -11,6 +11,7 @@
 #include <thread>
 #include <condition_variable>
 #include <mutex>
+#include <deque>
 #include <bloom.h>
 
 namespace lsmtree {
@@ -30,17 +31,28 @@ public:
     bool Get(const std::string& key, std::shared_ptr<std::string>& value) override;
 
 private:
+    void BackgroundWorkerThreadEntry();
+
+    void MemtableChange();
+
+    void MergeMemtableToDisk(MemTable* table);
+
+
+private:
     using CacheId_t = uint64_t;
     using L1Cache = Cache<std::string, std::shared_ptr<std::string>>;
     using L2Cache = Cache<CacheId_t, std::shared_ptr<Block>>;
 
-    std::unique_ptr<SimpleBloomFilter> bloom_;
-    std::unique_ptr<MemTable> table_;
+    SimpleBloomFilter* bloom_;
+    MemTable* table_;
+    std::deque<MemTable*> background_tables_;
     L1Cache line_cache_;
     L2Cache block_cache_;
+    CacheId_t next_block_id_;      //only increase num
     std::thread background_worker;
     std::condition_variable cond_;
-    mutable std::mutex mutex_;
+    mutable std::mutex table_mutex_;
+    mutable std::mutex queue_mutex_;
 };
 
 };  //namespace lsmtree

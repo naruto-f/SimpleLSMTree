@@ -14,7 +14,7 @@ namespace lsmtree {
 
 class Block {
 public:
-    Block(char* raw_data, uint64_t block_size) : raw_data_(raw_data), block_size_(block_size) {
+    Block(uint64_t block_id, char* raw_data, uint64_t block_size) : id_(block_id), raw_data_(raw_data), block_size_(block_size) {
         PraseBlock();
     }
 
@@ -27,6 +27,7 @@ private:
     int PraseBlock();
 
 private:
+    uint64_t id_;
     uint64_t block_size_;
     char* raw_data_;
     std::vector<char*> key_value_info_;

@@ -36,10 +36,10 @@ public:
     ///
     Status Search(const std::string& key, std::string_view& value) const;
 
-    Status Dump(const std::string& filename);
+    Status Dump(const std::string& filename, uint64_t* start_block_id) const;
 
     ///
-    uint32_t GetCurNums() const ;
+    bool IsFull() { return GetCurNums() >= kMaxNumsPerTable; }
 
     ///
     void Ref();
@@ -59,6 +59,8 @@ private:
             }
         }
     };
+
+    uint32_t GetCurNums() const;
 
     using Table = SkipList<std::string, std::string, KeyCompartor>;
 
