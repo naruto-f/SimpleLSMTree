@@ -13,16 +13,21 @@
 #include <mutex>
 #include <deque>
 #include <bloom.h>
+#include <list>
+#include <atomic>
+#include <unordered_set>
+
 
 namespace lsmtree {
 
 
 class Block;
 class MemTable;
+struct MergeNode;
 
 class LsmTree : public Db {
 public:
-    LsmTree();
+    LsmTree(uint32_t line_cache_capacity, uint32_t block_cache_capacity);
 
     void Add(const std::string& key, const std::string& value) override;
 
@@ -35,9 +40,24 @@ private:
 
     void MemtableChange();
 
-    void MergeMemtableToDisk(MemTable* table);
+    bool MergeMemtableToDisk(MemTable* table);
 
+    bool CheckAndDownSstableIfPossible();
 
+    void CheckSstableInfo() const;
+
+    ///range is [start_index, end_index]
+    bool MergeRangeOfSstable(int level, int start_index, int end_index);
+
+    std::list<MergeNode> MergeTwoSstable(int level, int older_index, int newer_index, std::vector<Block*>& alloc_blocks);
+
+    std::list<MergeNode> MergeTwoMergerdList(std::list<MergeNode>& older_list, std::list<MergeNode>& newer_list);
+
+    bool DumpToNextLevel(int level, std::list<MergeNode>& list);
+
+    bool DumpToOneFile(const std::string &filename, std::list<MergeNode>::const_iterator& iter);
+
+    void TryBestDoDelayDelete();
 private:
     using CacheId_t = uint64_t;
     using L1Cache = Cache<std::string, std::shared_ptr<std::string>>;
@@ -48,9 +68,10 @@ private:
     std::deque<MemTable*> background_tables_;
     L1Cache line_cache_;
     L2Cache block_cache_;
-    CacheId_t next_block_id_;      //only increase num
+    std::atomic<CacheId_t> next_block_id_;      //only increase num until touch Max uint64_t
     std::thread background_worker;
     std::condition_variable cond_;
+    std::unordered_set<std::string> file_need_delete_;
     mutable std::mutex table_mutex_;
     mutable std::mutex queue_mutex_;
 };

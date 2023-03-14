@@ -36,7 +36,7 @@ public:
     ///
     Status Search(const std::string& key, std::string_view& value) const;
 
-    Status Dump(const std::string& filename, uint64_t* start_block_id) const;
+    Status Dump(const std::string& filename, std::atomic<uint64_t>& block_id) const;
 
     ///
     bool IsFull() { return GetCurNums() >= kMaxNumsPerTable; }

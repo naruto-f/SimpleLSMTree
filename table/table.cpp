@@ -3,19 +3,16 @@
 //
 
 #include "table.h"
-#include <reader.h>
-#include <block.h>
-#include <cache.h>
-
 #include <cassert>
-#include <memory>
+
 
 
 namespace {
-    Reader reader_;
+//    Reader reader_;
 
 
 }
+
 
 lsmtree::SSTable::SSTable(const char *filename, L2Cache* cache) : cache_(cache) {
     std::ifstream& reader = reader_.GetReader();
@@ -27,7 +24,7 @@ lsmtree::SSTable::SSTable(const char *filename, L2Cache* cache) : cache_(cache) 
     }
 }
 
-bool lsmtree::SSTable::Valid() const {
+bool lsmtree::SSTable::Valid() {
     std::ifstream& reader = reader_.GetReader();
     return reader && !reader.fail();
 }
@@ -74,7 +71,7 @@ void lsmtree::SSTable::ReadDataIndexBlock() {
     }
 }
 
-int lsmtree::SSTable::Get(const std::string_view &key, std::shared_ptr<std::string>& value) const {
+int lsmtree::SSTable::Get(const std::string_view &key, std::shared_ptr<std::string>& value) {
     int block_index = GetBlockIndexOfKeyMayIn(key);
     if (block_index == -1) {
         return -1;

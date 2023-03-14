@@ -93,7 +93,7 @@ void lsmtree::MemTable::UnRef() {
     }
 }
 
-lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, uint64_t* start_block_id) const {
+lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, std::atomic<uint64_t>& block_id) const {
     Writer file_writer;
     std::ofstream& writer = file_writer.GetWriter();
     writer.open(filename, std::ios::out | std::ios::binary);
@@ -177,11 +177,11 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, u
     ///write data index block to file.
     auto block_num = block_size.size();
     for (int i = 0; i < block_num; ++i) {
-        writer.write(reinterpret_cast<char*>(start_block_id), sizeof(uint64_t));
+        uint64_t id = block_id.fetch_add(1, std::memory_order_relaxed);
+        writer.write(reinterpret_cast<char*>(id), sizeof(uint64_t));
         if (writer.fail()) {
             return Status::kError;
         }
-        ++(*start_block_id);
 
         auto last_key_info = last_key_of_blocks[i];
         writer.write(reinterpret_cast<char*>(&last_key_info.second), sizeof(uint64_t));

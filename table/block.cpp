@@ -4,7 +4,6 @@
 
 #include "block.h"
 
-#include <cassert>
 
 int lsmtree::Block::PraseBlock() {
     if (!raw_data_) {
@@ -52,4 +51,32 @@ int lsmtree::Block::Get(const std::string_view& key, std::string_view& value) co
 
     value = std::string_view(key_value_info, value_size);
     return 0;
+}
+
+char lsmtree::Block::GetFlagByIndex(int index) {
+    char* key_value_info = key_value_info_[index];
+    return *key_value_info;
+}
+
+std::string_view lsmtree::Block::GetKeyByIndex(int index) {
+    char* key_value_info = key_value_info_[index];
+    ++key_value_info;
+
+    uint64_t key_size = *reinterpret_cast<uint64_t*>(key_value_info);
+    key_value_info += sizeof(uint64_t);
+
+    return std::string_view(key_value_info, key_size);
+}
+
+std::string_view lsmtree::Block::GetValueByIndex(int index) {
+    char* key_value_info = key_value_info_[index];
+    ++key_value_info;
+
+    uint64_t key_size = *reinterpret_cast<uint64_t*>(key_value_info);
+    key_value_info += (sizeof(uint64_t) + key_size);
+
+    uint64_t value_size = *reinterpret_cast<uint64_t*>(key_value_info);
+    key_value_info += sizeof(uint64_t);
+
+    return std::string_view(key_value_info, value_size);
 }
