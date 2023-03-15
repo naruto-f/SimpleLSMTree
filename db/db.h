@@ -21,6 +21,8 @@ public:
     virtual void Delete(const std::string& key) = 0;
 
     virtual bool Get(const std::string& key, std::shared_ptr<std::string>& value) = 0;
+
+    virtual ~Db() { }
 };
 
 };  //namespace lsmtree

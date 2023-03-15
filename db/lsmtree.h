@@ -58,6 +58,8 @@ private:
     bool DumpToOneFile(const std::string &filename, std::list<MergeNode>::const_iterator& iter);
 
     void TryBestDoDelayDelete();
+
+    bool Log(uint8_t type, const std::string& key, const std::string& value);
 private:
     using CacheId_t = uint64_t;
     using L1Cache = Cache<std::string, std::shared_ptr<std::string>>;
