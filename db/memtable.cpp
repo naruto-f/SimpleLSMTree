@@ -24,35 +24,28 @@ lsmtree::MemTable::Status lsmtree::MemTable::Search(const std::string& key, std:
     return Status::kNotFound;
 }
 
-lsmtree::MemTable::Status lsmtree::MemTable::Add(const std::string &key, const std::string_view &value) {
-    if (GetCurNums() >= kMaxNumsPerTable) {
-        return Status::kFull;
-    }
-
+lsmtree::MemTable::Status lsmtree::MemTable::Add(const std::string &key, const std::string& value) {
     Table::Node* target = nullptr;
     if (table_.Exist(key, &target)) {
         assert(target);
         assert(target->GetKey() == key);
 
         if (target->GetFlag() == Table::NodeFlag::NODE_ADD) {
-            target->SetValue(std::string(value.data(), value.size()));
+            target->SetValue(value);
         } else if (target->GetFlag() == Table::NodeFlag::NODE_DELETE) {
             target->SetFlag(Table::NodeFlag::NODE_ADD);
-            target->SetValue(std::string(value.data(), value.size()));
+            target->SetValue(value);
         }
     } else {
-        table_.Insert(key, std::string(value.data(), value.size()), Table::NodeFlag::NODE_ADD);
-        node_counts_.fetch_add(1, std::memory_order_relaxed);
+        table_.Insert(key, value, Table::NodeFlag::NODE_ADD);
+        UpdateCurSize(key, 1 + 2 * sizeof(uint64_t) + key.size() + value.size());
+        //node_counts_.fetch_add(1, std::memory_order_relaxed);
     }
 
     return Status::kSuccess;
 }
 
 lsmtree::MemTable::Status lsmtree::MemTable::Delete(const std::string& key) {
-    if (GetCurNums() >= kMaxNumsPerTable) {
-        return Status::kFull;
-    }
-
     Table::Node* target = nullptr;
     if (table_.Exist(key, &target)) {
         assert(target);
@@ -62,13 +55,14 @@ lsmtree::MemTable::Status lsmtree::MemTable::Delete(const std::string& key) {
         target->SetValue("");
     } else {
         table_.Insert(key, "", Table::NodeFlag::NODE_DELETE);
-        node_counts_.fetch_add(1, std::memory_order_relaxed);
+        UpdateCurSize(key, 1 + 2 * sizeof(uint64_t) + key.size());
+        //node_counts_.fetch_add(1, std::memory_order_relaxed);
     }
 
     return Status::kSuccess;
 }
 
-lsmtree::MemTable::MemTable() : refs_(0), node_counts_(0) {
+lsmtree::MemTable::MemTable() : refs_(0), estimate_size_(3 * sizeof(uint64_t)), cur_block_size_(0) {
 
 }
 
@@ -76,9 +70,9 @@ lsmtree::MemTable::~MemTable() {
     assert(refs_.load(std::memory_order_relaxed) == 0);
 }
 
-uint32_t lsmtree::MemTable::GetCurNums() const {
-    return node_counts_.load(std::memory_order_relaxed);
-}
+//uint32_t lsmtree::MemTable::GetCurNums() const {
+//   // return node_counts_.load(std::memory_order_relaxed);
+//}
 
 void lsmtree::MemTable::Ref() {
     refs_.fetch_add(1, std::memory_order_relaxed);
@@ -95,8 +89,8 @@ void lsmtree::MemTable::UnRef() {
 
 lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, std::atomic<uint64_t>& block_id) const {
     Writer file_writer;
-    std::ofstream& writer = file_writer.GetWriter();
-    writer.open(filename, std::ios::out | std::ios::binary);
+    std::fstream& writer = file_writer.GetWriter();
+    writer.open(filename, std::ios::out | std::ios::binary | std::ios::trunc);
     if (!writer) {
         std::cerr << "file " << filename << " open filed!" << std::endl;
         return Status::kError;
@@ -126,7 +120,7 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, s
         key = (*iter)->GetKey().c_str();
         key_size = (*iter)->GetKey().size();
         value = (*iter)->GetValue().c_str();
-        std::size_t value_size = (*iter)->GetValue().size();
+        value_size = (*iter)->GetValue().size();
 
 
         writer.write(&flag, sizeof(flag));
@@ -134,7 +128,7 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, s
             return Status::kError;
         }
 
-        writer.write(reinterpret_cast<char*>(&key_size), sizeof(std::size_t));
+        writer.write(reinterpret_cast<char*>(&key_size), sizeof(uint64_t));
         if (writer.fail()) {
             return Status::kError;
         }
@@ -144,7 +138,7 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, s
             return Status::kError;
         }
 
-        writer.write(reinterpret_cast<char*>(&value_size), sizeof(std::size_t));
+        writer.write(reinterpret_cast<char*>(&value_size), sizeof(uint64_t));
         if (writer.fail()) {
             return Status::kError;
         }
@@ -153,16 +147,15 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, s
         if (writer.fail()) {
             return Status::kError;
         }
+        writer.flush();
 
-        cur_block_offset += (sizeof(char) + 2 * sizeof(std::size_t) + key_size + value_size);
+        cur_block_offset += (sizeof(char) + 2 * sizeof(uint64_t) + key_size + value_size);
         if (cur_block_offset >= MaxBlockSize) {
             cur_table_offset += cur_block_offset;
-            cur_block_offset = 0;
+            block_size.push_back(cur_block_offset);
             block_offset.push_back(cur_table_offset);
             last_key_of_blocks.push_back({key, key_size});
-            block_size.push_back(cur_block_offset);
-
-            writer.flush();
+            cur_block_offset = 0;
         }
 
         iter.Next();
@@ -178,7 +171,7 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, s
     auto block_num = block_size.size();
     for (int i = 0; i < block_num; ++i) {
         uint64_t id = block_id.fetch_add(1, std::memory_order_relaxed);
-        writer.write(reinterpret_cast<char*>(id), sizeof(uint64_t));
+        writer.write(reinterpret_cast<char*>(&id), sizeof(uint64_t));
         if (writer.fail()) {
             return Status::kError;
         }
@@ -226,6 +219,14 @@ lsmtree::MemTable::Status lsmtree::MemTable::Dump(const std::string &filename, s
     writer.flush();
 
     return Status::kSuccess;
+}
+
+void lsmtree::MemTable::UpdateCurSize(const std::string& key, uint64_t add_size) {
+    cur_block_size_ += add_size;
+    if (cur_block_size_ >= 64 * 1024) {
+        estimate_size_ += (cur_block_size_ + 4 * sizeof(uint64_t) + key.size());
+        cur_block_size_ = 0;
+    }
 }
 
 

@@ -23,12 +23,12 @@ public:
         kFull
     };
 
-    enum : uint16_t {
-        kMaxNumsPerTable = 20001
-    };
+//    enum : uint16_t {
+//        kMaxNumsPerTable = 20001
+//    };
 
     ///
-    Status Add(const std::string& key, const std::string_view& value);
+    Status Add(const std::string& key, const std::string& value);
 
     ///
     Status Delete(const std::string& key);
@@ -39,7 +39,7 @@ public:
     Status Dump(const std::string& filename, std::atomic<uint64_t>& block_id) const;
 
     ///
-    bool IsFull() { return GetCurNums() >= kMaxNumsPerTable; }
+    bool IsFull() { return estimate_size_ >= 4 * 1024 * 1024; }   //4MB
 
     ///
     void Ref();
@@ -60,7 +60,8 @@ private:
         }
     };
 
-    uint32_t GetCurNums() const;
+    //uint32_t GetCurNums() const;
+    void UpdateCurSize(const std::string& key, uint64_t add_size);
 
     using Table = SkipList<std::string, std::string, KeyCompartor>;
 
@@ -69,7 +70,9 @@ private:
 
     Table table_;
     std::atomic<int> refs_;    //thread nums working on this memtable now
-    std::atomic<uint32_t> node_counts_;
+    //std::atomic<uint32_t> node_counts_;
+    uint64_t estimate_size_;
+    uint64_t cur_block_size_;
 };
 
 }  //namespace lsmtree

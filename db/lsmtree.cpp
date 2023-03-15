@@ -13,8 +13,8 @@
 #include <filelock.h>
 
 namespace {
-    const char* dir_name = "../storage/";
-    const char* config_dir_name = "../config/";
+    const char* dir_name = "/home/naruto/StudyDir/SimpleLSMTree/storage/";
+    const char* config_dir_name = "/home/naruto/StudyDir/SimpleLSMTree/config/";
     const std::string filename_prefix = "sstable";
 
     const uint32_t SstableNumsPerLevel[] = {8, 80, 800, 8000, 80000};
@@ -33,9 +33,9 @@ namespace {
     std::atomic<uint32_t> log_suffix_min;
 
     std::mutex level_files_mutex;
-    int level_file_nums[kMaxLevel + 1] = { 0 };
-    unsigned long level_suffix_max[kMaxLevel + 1] = { 0 };
-    unsigned long level_suffix_min[kMaxLevel + 1] = { 0 };
+    uint32_t level_file_nums[kMaxLevel + 1] = { 0 };
+    uint64_t level_suffix_max[kMaxLevel + 1] = { 0 };
+    uint64_t level_suffix_min[kMaxLevel + 1] = { 0 };
     std::unordered_map<std::string, uint64_t> level_file_refs;
 
     bool TestFileCanDelete(const std::string& filename) {
@@ -64,6 +64,10 @@ struct lsmtree::MergeNode {
 };
 
 bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>& value) {
+    if (!Valid()) {
+        return false;
+    }
+
     ///①Throught bloom filter first
     if (!bloom_->MayExist(key)) {
         return false;
@@ -77,18 +81,19 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
 
 
     ///③lookup at cur main SkipList
-    std::string_view value_view(nullptr);
+    std::string_view value_view;
     MemTable* table = nullptr;
     {
         std::lock_guard<std::mutex> lock(table_mutex_);
-        MemTable* table = table_;
+        table = table_;
         assert(table);
+        table->Ref();
     }
 
-    table->Ref();
     MemTable::Status status = table->Search(key, value_view);
     if (status == MemTable::Status::kSuccess) {
         value = std::make_shared<std::string>(value_view.data(), value_view.size());
+        line_cache_.Insert(key, value);
         table->UnRef();
         return true;
     } else if (status == MemTable::Status::kFound) {
@@ -112,6 +117,7 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
         status = table->Search(key, value_view);
         if (status == MemTable::Status::kSuccess) {
             value = std::make_shared<std::string>(value_view.data(), value_view.size());
+            line_cache_.Insert(key, value);
             break;
         } else if (status == MemTable::Status::kFound) {
             break;
@@ -130,13 +136,19 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
 
 
     ///⑤Binary search block index that key may exist, foreach sstable from new to old, and lookup at L2Cache if possible.
-    std::pair<uint64_t, uint64_t> range_of_file_pre_level[kMaxLevel + 1];
+    std::pair<uint64_t, uint64_t> range_of_file_pre_level[kMaxLevel + 1] = {{0, 0}};
+    std::unordered_set<std::string> need_locked_files;
     {
         std::lock_guard<std::mutex> lock(level_files_mutex);
         for (int i = 0; i <= kMaxLevel; ++i) {
+            if(level_file_nums[i] == 0) {
+                continue;
+            }
+
             range_of_file_pre_level[i] = {level_suffix_min[i], level_suffix_max[i]};
-            for (int j = level_suffix_min[i]; j < level_suffix_min[i] + SstableNumsPerLevel[0]; ++j) {
+            for (int j = level_suffix_min[i]; j < level_suffix_min[i] + std::min(SstableNumsPerLevel[0], level_file_nums[i]); ++j) {
                 std::string file_tag = std::to_string(i) + ":" + std::to_string(j);
+                need_locked_files.insert(file_tag);
                 ++level_file_refs[file_tag];
             }
         }
@@ -148,13 +160,17 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
             break;
         }
 
-        for (int j = range_of_file_pre_level[i].second; j >= range_of_file_pre_level[i].first; --j) {
+        if (range_of_file_pre_level[i].second == range_of_file_pre_level[i].first) {
+            continue;
+        }
+
+        for (int j = range_of_file_pre_level[i].second - 1; j >= range_of_file_pre_level[i].first; --j) {
             std::string filename = dir_name + std::string("level" + std::to_string(i) + "/") + filename_prefix + std::to_string(j);
 
             SSTable cur_table(filename.c_str(), &block_cache_);
             assert(cur_table.Valid());
 
-            int res = cur_table.Get(key, value);
+            int res = cur_table.Get(std::string_view(key.data(), key.size()), value);
             if (res == 0 || res == -2) {
                 break;
             }
@@ -163,15 +179,21 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
 
     {
         std::lock_guard<std::mutex> lock(level_files_mutex);
-        for (int i = 0; i <= kMaxLevel; ++i) {
-            range_of_file_pre_level[i] = {level_suffix_min[i], level_suffix_max[i]};
-            for (int j = level_suffix_min[i]; j < level_suffix_min[i] + SstableNumsPerLevel[0]; ++j) {
-                std::string file_tag = std::to_string(i) + ":" + std::to_string(j);
-                if (--level_file_refs[file_tag] == 0) {
-                    level_file_refs.erase(file_tag);
-                }
+        for (auto file_tag : need_locked_files) {
+            if (--level_file_refs[file_tag] == 0) {
+                level_file_refs.erase(file_tag);
             }
         }
+
+//        for (int i = 0; i <= kMaxLevel; ++i) {
+//            range_of_file_pre_level[i] = {level_suffix_min[i], level_suffix_max[i]};
+//            for (int j = level_suffix_min[i]; j < level_suffix_min[i] + SstableNumsPerLevel[0]; ++j) {
+//                std::string file_tag = std::to_string(i) + ":" + std::to_string(j);
+//                if (--level_file_refs[file_tag] == 0) {
+//                    level_file_refs.erase(file_tag);
+//                }
+//            }
+//        }
     }
 
     // TODO: L1Cache add target that tag node is added or deleted
@@ -183,7 +205,11 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
     return false;
 }
 
-void lsmtree::LsmTree::Add(const std::string &key, const std::string &value) {
+bool lsmtree::LsmTree::Add(const std::string &key, const std::string &value) {
+    if (!Valid()) {
+        return false;
+    }
+
     {
         std::lock_guard<std::mutex> lock(table_mutex_);
         if (table_->IsFull()) {
@@ -191,12 +217,19 @@ void lsmtree::LsmTree::Add(const std::string &key, const std::string &value) {
         }
 
         Log(UpdateType::kAdd, key, value);
+        table_->Add(key, value);
     }
 
-    table_->Add(key, value);
+    bloom_->Insert(key);
+    line_cache_.Insert(key, std::make_shared<std::string>(value));
+    return true;
 }
 
-void lsmtree::LsmTree::Delete(const std::string &key) {
+bool lsmtree::LsmTree::Delete(const std::string &key) {
+    if (!Valid()) {
+        return false;
+    }
+
     {
         std::lock_guard<std::mutex> lock(table_mutex_);
         if (table_->IsFull()) {
@@ -204,22 +237,25 @@ void lsmtree::LsmTree::Delete(const std::string &key) {
         }
 
         Log(UpdateType::kAdd, key, "");
+        table_->Delete(key);
     }
 
-    table_->Delete(key);
+    bloom_->Insert(key);
+    line_cache_.Insert(key, nullptr);
+    return true;
 }
 
 void lsmtree::LsmTree::BackgroundWorkerThreadEntry() {
     while (true) {
         std::unique_lock<std::mutex> lock(queue_mutex_);
         cond_.wait(lock, [this]() {
-            return !background_tables_.empty();
+            return !background_tables_.empty() || !Valid();
         });
 
         while (!background_tables_.empty()) {
             auto table = background_tables_.front();
-            table_->UnRef();
             background_tables_.pop_front();
+            table->UnRef();
             lock.unlock();
 
             //TODO: how to recover from disk write failures or low space
@@ -229,6 +265,10 @@ void lsmtree::LsmTree::BackgroundWorkerThreadEntry() {
         }
 
         TryBestDoDelayDelete();
+
+        if (!Valid()) {
+            break;
+        }
     }
 }
 
@@ -237,7 +277,7 @@ void lsmtree::LsmTree::MemtableChange() {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         background_tables_.push_back(table_);
         table_->Ref();
-        ++log_suffix_max;
+        log_suffix_max.fetch_add(1, std::memory_order_acq_rel);
         cond_.notify_all();
     }
 
@@ -254,20 +294,24 @@ bool lsmtree::LsmTree::MergeMemtableToDisk(MemTable* table) {
         return false;
     }
 
-    std::string filename = dir_name + std::string("level0/") + filename_prefix + std::to_string(level_suffix_max[0] + 1);
+    std::string filename = dir_name + std::string("level0/") + filename_prefix + std::to_string(level_suffix_max[0]);
     table->Dump(filename, next_block_id_);
+
+    {
+        std::lock_guard<std::mutex> lock(level_files_mutex);
+        ++level_suffix_max[0];
+        ++level_file_nums[0];
+    }
 
     /// log can be deleted when it own memtable's data persist to disk
     assert(log_suffix_min <= log_suffix_max);
     std::string log_filename = config_dir_name + std::string("log/") + std::to_string(log_suffix_min) + ".log";
-    std::filesystem::path path(filename);
+    std::filesystem::path path(log_filename);
     if (std::filesystem::exists(path)) {
         std::filesystem::remove(path);
     }
 
-    if (log_suffix_min == log_suffix_max) {
-        log_suffix_max = log_suffix_min = 0;
-    } else {
+    if (log_suffix_min < log_suffix_max) {
         ++log_suffix_min;
     }
 
@@ -296,11 +340,23 @@ bool lsmtree::LsmTree::CheckAndDownSstableIfPossible() {
 }
 
 lsmtree::LsmTree::LsmTree(uint32_t line_cache_capacity, uint32_t block_cache_capacity)
-                          : line_cache_(line_cache_capacity),
-                            block_cache_(block_cache_capacity),
-                            background_worker(&LsmTree::BackgroundWorkerThreadEntry, this) {
-    //background_worker = std::move(std::thread(&LsmTree::BackgroundWorkerThreadEntry, this));
-    CheckSstableInfo();
+                          : valid_flag_(false),
+                            bloom_(new SimpleBloomFilter(10000000, 3)),
+                            table_(new MemTable()),
+                            line_cache_(line_cache_capacity),
+                            block_cache_(block_cache_capacity) {
+    //CheckSstableInfo();
+    table_->Ref();
+    ReadMetaInfo();
+    assert(Valid());
+
+    ///running backgroud worker thread
+    background_worker = std::move(std::thread(&LsmTree::BackgroundWorkerThreadEntry, this));
+
+    CheckLogAndRedoIfPossible();
+    assert(Valid());
+
+    std::cout << "db is runing!" << std::endl;
 }
 
 void lsmtree::LsmTree::CheckSstableInfo() const {
@@ -344,10 +400,6 @@ bool lsmtree::LsmTree::MergeRangeOfSstable(int level, int start_index, int end_i
     for (int i = start_index; i <= end_index; ++i) {
         file_need_delete_.insert(std::to_string(level) + ":" + std::to_string(i));
     }
-
-    // TODO: how to store those var could not result in race condition
-    level_suffix_min[level] = end_index + 1;
-    level_file_nums[level] -= (end_index - start_index + 1);
 
     return res;
 }
@@ -474,16 +526,22 @@ bool lsmtree::LsmTree::DumpToNextLevel(int level, std::list<MergeNode> &list) {
         }
     }
 
-    level_file_nums[level] += (start_index - level_suffix_max[level + 1] - 1);
-    level_suffix_max[level + 1] = start_index - 1;
+    {
+        // TODO: how to store those var use atomic ops could not result in race condition
+        std::lock_guard<std::mutex> lock(level_files_mutex);
+        level_suffix_min[level] += SstableNumsPerLevel[0];
+        level_file_nums[level] -= SstableNumsPerLevel[0];
+        level_file_nums[level + 1] += SstableNumsPerLevel[0];
+        level_suffix_max[level + 1] += SstableNumsPerLevel[0];
+    }
 
     return true;
 }
 
 bool lsmtree::LsmTree::DumpToOneFile(const std::string &filename, std::list<MergeNode>::const_iterator& iter) {
     Writer file_writer;
-    std::ofstream& writer = file_writer.GetWriter();
-    writer.open(filename, std::ios::out | std::ios::binary);
+    std::fstream& writer = file_writer.GetWriter();
+    writer.open(filename, std::ios::out | std::ios::binary | std::ios::trunc);
     if (!writer) {
         std::cerr << "file " << filename << " open filed!" << std::endl;
         return false;
@@ -525,8 +583,8 @@ bool lsmtree::LsmTree::DumpToOneFile(const std::string &filename, std::list<Merg
             writer.flush();
 
             uint64_t all_size = cur_block_offset + last_key_of_blocks.size() * 4 * sizeof(uint64_t)
-                                + std::accumulate(last_key_of_blocks.begin(), last_key_of_blocks.end(), 0, [](const std::pair<const char*, uint64_t>& lhs, const std::pair<const char*, uint64_t>& rhs) {
-                                    return lhs.second + rhs.second;
+                                + std::accumulate(last_key_of_blocks.begin(), last_key_of_blocks.end(), static_cast<uint64_t>(0), [](uint64_t sum, const std::pair<const char*, uint64_t>& rhs) {
+                                    return sum + rhs.second;
                                 }) + 3 * sizeof(uint64_t);
 
             if (all_size >= kMaxLenApproximatePerSstable) {
@@ -632,16 +690,16 @@ bool lsmtree::LsmTree::Log(uint8_t type, const std::string& key, const std::stri
     Writer writer_handle;
     auto& writer = writer_handle.GetWriter();
 
-    std::string log_filename = config_dir_name + std::string("log/") + std::to_string(log_suffix_max) + ".log";
-    writer.open(log_filename, std::ios::binary | std::ios::out);
+    std::string log_filename = config_dir_name + std::string("log/") + std::to_string(log_suffix_max.load(std::memory_order_acquire)) + ".log";
+    writer.open(log_filename, std::ios::binary | std::ios::out | std::ios::app);
     if (!writer) {
         return false;
     }
 
-    FileLock writer_lock(dynamic_cast<std::fstream&>(writer), F_WRLCK);
-    writer_lock.Lock();
+    //FileLock writer_lock(writer, F_WRLCK);
+    //writer_lock.Lock();
 
-    writer.seekp(std::ios::end);
+    //writer.seekp(std::ios::end);
 
     uint64_t key_size = key.size();
     uint64_t value_size = value.size();
@@ -673,6 +731,225 @@ bool lsmtree::LsmTree::Log(uint8_t type, const std::string& key, const std::stri
     writer.flush();
 
     return true;
+}
+
+void lsmtree::LsmTree::ReadMetaInfo() {
+    std::string meta_filename = config_dir_name + std::string("metainfo");
+    std::filesystem::path path(meta_filename);
+    if (!std::filesystem::exists(path)) {
+        valid_flag_ = true;
+        return;
+    }
+
+    Reader reader_handle;
+    auto& reader = reader_handle.GetReader();
+    reader.open(meta_filename, std::ios::in | std::ios::binary);
+    if (!reader) {
+        return;
+    }
+
+    reader.read(reinterpret_cast<char*>(&next_block_id_), sizeof(CacheId_t));
+    if (reader.fail()) {
+        return;
+    }
+
+    for (int i = 0; i <= kMaxLevel; ++i) {
+        reader.read(reinterpret_cast<char*>(&level_file_nums[i]), sizeof(uint32_t));
+        if (reader.fail()) {
+            return;
+        }
+
+        reader.read(reinterpret_cast<char*>(&level_suffix_min[i]), sizeof(uint64_t));
+        if (reader.fail()) {
+            return;
+        }
+
+        reader.read(reinterpret_cast<char*>(&level_suffix_max[i]), sizeof(uint64_t));
+        if (reader.fail()) {
+            return;
+        }
+
+        assert(level_suffix_max[i] == level_suffix_min[i] || level_file_nums[i] == (level_suffix_max[i] - level_suffix_min[i] + 1));
+    }
+
+    reader.read(reinterpret_cast<char*>(&log_suffix_min), sizeof(uint32_t));
+    if (reader.fail()) {
+        return;
+    }
+
+    reader.read(reinterpret_cast<char*>(&log_suffix_max), sizeof(uint32_t));
+    if (reader.fail()) {
+        return;
+    }
+
+    assert(log_suffix_min <= log_suffix_max);
+
+    valid_flag_ = true;
+}
+
+bool lsmtree::LsmTree::Valid() {
+    return valid_flag_.load(std::memory_order_acquire);
+}
+
+bool lsmtree::LsmTree::WriteMetaInfoToDisk() {
+    assert(!Valid());
+
+    Writer writer_handle;
+    auto& writer = writer_handle.GetWriter();
+    std::string meta_filename = config_dir_name + std::string("metainfo");
+    writer.open(meta_filename, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!writer) {
+        return false;
+    }
+
+    writer.write(reinterpret_cast<char*>(&next_block_id_), sizeof(CacheId_t));
+    if (writer.fail()) {
+        return false;
+    }
+
+    for (int i = 0; i <= kMaxLevel; ++i) {
+        assert(level_suffix_max[i] == level_suffix_min[i] ||level_file_nums[i] == (level_suffix_max[i] - level_suffix_min[i] + 1));
+        writer.write(reinterpret_cast<char*>(&level_file_nums[i]), sizeof(uint32_t));
+        if (writer.fail()) {
+            return false;
+        }
+
+        writer.write(reinterpret_cast<char*>(&level_suffix_min[i]), sizeof(uint64_t));
+        if (writer.fail()) {
+            return false;
+        }
+
+        writer.write(reinterpret_cast<char*>(&level_suffix_max[i]), sizeof(uint64_t));
+        if (writer.fail()) {
+            return false;
+        }
+    }
+
+    assert(log_suffix_min <= log_suffix_max);
+    writer.write(reinterpret_cast<char*>(&log_suffix_min), sizeof(uint32_t));
+    if (writer.fail()) {
+        return false;
+    }
+
+    writer.write(reinterpret_cast<char*>(&log_suffix_max), sizeof(uint32_t));
+    if (writer.fail()) {
+        return false;
+    }
+    writer.flush();
+
+    return true;
+}
+
+bool lsmtree::LsmTree::CheckLogAndRedoIfPossible() {
+//    if (log_suffix_min == log_suffix_max) {
+//        if (log_suffix_min != 0) {
+//            log_suffix_min = log_suffix_max = 0;
+//        }
+//        return true;
+//    }
+
+    assert(log_suffix_min <= log_suffix_max);
+    while (log_suffix_min <= log_suffix_max) {
+        std::string cur_log_filename = config_dir_name + std::string("log/") + std::to_string(log_suffix_min) + ".log";
+        std::filesystem::path path(cur_log_filename);
+        if (std::filesystem::exists(path)) {
+            if (RedoLog(cur_log_filename)) {
+                if (log_suffix_min < log_suffix_max) {
+                    std::filesystem::remove(path);
+                    ++log_suffix_min;
+                } else {
+                    //TODO: rename log to 0.log
+                    //std::filesystem::rename(path, 0.log)
+                    break;
+                }
+            } else {
+                valid_flag_ = false;
+                return false;
+            }
+        } else {
+            break;
+        }
+    }
+
+    //log_suffix_min = log_suffix_max = 0;
+    return true;
+}
+
+bool lsmtree::LsmTree::RedoLog(const std::string& log_filename) {
+    Reader reader_handle;
+    auto& reader = reader_handle.GetReader();
+    reader.open(log_filename, std::ios::in | std::ios::binary);
+    if (!reader) {
+        return false;
+    }
+
+    reader.seekg(0, std::ios::end);
+    auto eof = reader.tellg();
+
+    reader.seekg(0, std::ios::beg);
+
+    char flag = -1;
+    uint64_t key_size = 0;
+    uint64_t value_size = 0;
+    std::string key;
+    std::string value;
+
+    while (reader.tellg() < eof) {
+        reader.read(reinterpret_cast<char*>(&flag), sizeof(char));
+        if (reader.fail()) {
+            return false;
+        }
+
+        reader.read(reinterpret_cast<char*>(&key_size), sizeof(uint64_t));
+        if (reader.fail()) {
+            return false;
+        }
+
+        key.resize(key_size, 0);
+        reader.read(key.data(), key_size);
+        if (reader.fail()) {
+            return false;
+        }
+
+        reader.read(reinterpret_cast<char*>(&value_size), sizeof(uint64_t));
+        if (reader.fail()) {
+            return false;
+        }
+
+        value.resize(value_size, 0);
+        reader.read(value.data(), value_size);
+        if (reader.fail()) {
+            return false;
+        }
+
+        if (flag == 0) {
+            table_->Add(key, value);
+            //line_cache_.Insert(key, std::make_shared<std::string>(value));
+        } else {
+            table_->Delete(key);
+            //line_cache_.Insert(key, nullptr);
+        }
+    }
+
+    return true;
+}
+
+lsmtree::LsmTree::~LsmTree() {
+    if (Valid()) {
+        Close();
+    }
+    background_worker.join();
+
+    WriteMetaInfoToDisk();
+
+    delete bloom_;
+
+    std::cout << "db is closed!"<< std::endl;
+}
+
+void lsmtree::LsmTree::Close() {
+    valid_flag_.store(false, std::memory_order_release);
+    cond_.notify_all();
 }
 
 

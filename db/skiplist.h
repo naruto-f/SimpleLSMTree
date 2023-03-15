@@ -11,6 +11,7 @@
 #include <memory>
 #include <cassert>
 #include <random>
+#include <cstring>
 
 namespace lsmtree {
 
@@ -26,7 +27,7 @@ public:
     };
 
     explicit SkipList(Comparator cmp = Comparator{})
-            : cur_max_level_(0), head_(new Node(NodeFlag::NODE_ADD, kMaxLevel)), cmp_(cmp) {}
+            : cur_max_level_(0), head_(new Node(NodeFlag::NODE_ADD, kMaxLevel - 1)), cmp_(cmp) {}
 
     ~SkipList() {
         Node* cur = head_->GetNextWithSync(0);
@@ -76,7 +77,7 @@ public:
         }
 
         void SeekToFirst() {
-            cur_ = skiplist_->head_->GetNextWithSync(0);
+            cur_ = skiplist_->head_->GetNextWithoutSync(0);
         }
 
         void SeekToLast() {
@@ -97,7 +98,7 @@ public:
 
 private:
     enum : uint8_t {
-        kMaxLevel = 10
+        kMaxLevel = 18
     };
 
     bool Equal(const Key& lhs, const Key& rhs) const { return cmp_(lhs, rhs) == 0; }
@@ -146,10 +147,11 @@ private:
 
 template<typename Key, typename Value, typename Comparator>
 struct SkipList<Key, Value, Comparator>::Node {
-    Node(NodeFlag flag, int level, const Key& key = Key{}, const Value& value = Value{})
+    Node(NodeFlag flag, int level, Key key = Key{}, Value value = Value{})
         : key_(key), value_(value), flag_(flag), kMaxLevel_(level) {
-//        assert(level < SkipList::kMaxLevel);
-        //next_.resize(level, static_cast<Node*>(nullptr));
+        for (int i = 0; i <= kMaxLevel_; ++i) {
+            SetNextWithoutSync(i, nullptr);
+        }
     }
 
     Node(const Node& rhs) = delete;
@@ -228,7 +230,7 @@ void SkipList<Key, Value, Comparator>::Insert(const Key &key, const Value &value
     int level = GetRandomLevel();
     assert(level < kMaxLevel);
 
-    Node* prev[kMaxLevel];
+    Node* prev[kMaxLevel] = { nullptr };
     Node* target = FindGreaterOrEqual(key, prev);
     assert(target == nullptr || !Equal(target->GetKey(), key));
 
@@ -288,8 +290,10 @@ typename SkipList<Key, Value, Comparator>::Node *SkipList<Key, Value, Comparator
     }
 }
 
+
+
 template<typename Key, typename Value, typename Comparator>
-bool SkipList<Key, Value, Comparator>::Exist(const Key &key, Node** target) const {
+bool SkipList<Key, Value, Comparator>::Exist(const Key &key, SkipList::Node** target) const {
     Node* node = FindGreaterOrEqual(key, nullptr);
 
     if (!node || !Equal(node->GetKey(), key)) {

@@ -15,16 +15,16 @@ public:
         if (writer_.is_open()) {
             writer_.close();
         } else if (writer_.fail()) {
-            writer_.clear();
+            //writer_.clear();
             writer_.close();
         }
     }
 
-    std::ofstream& GetWriter() {
+    std::fstream& GetWriter() {
         return writer_;
     }
 private:
-    std::ofstream writer_;
+    std::fstream writer_;
 };
 
 

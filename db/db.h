@@ -12,13 +12,13 @@ namespace lsmtree {
 ///Interface(abstract base class)
 class Db {
 public:
-    virtual void Open() = 0;
+    //virtual void Open() = 0;
 
     virtual void Close() = 0;
 
-    virtual void Add(const std::string& key, const std::string& value) = 0;
+    virtual bool Add(const std::string& key, const std::string& value) = 0;
 
-    virtual void Delete(const std::string& key) = 0;
+    virtual bool Delete(const std::string& key) = 0;
 
     virtual bool Get(const std::string& key, std::shared_ptr<std::string>& value) = 0;
 

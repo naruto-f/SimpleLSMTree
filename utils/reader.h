@@ -16,11 +16,11 @@ public:
         }
     }
 
-    std::ifstream& GetReader() {
+    std::fstream& GetReader() {
         return reader_;
     }
 private:
-    std::ifstream reader_;
+    std::fstream reader_;
 };
 
 

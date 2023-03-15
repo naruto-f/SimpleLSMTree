@@ -12,7 +12,7 @@
 #define MIX_UINT64(v)   ((uint32_t)((v>>32)^(v)))
 
 namespace {
-    const char* bloom_file = "/home/naruto/StudyDir/SimpleLSMTree/db/bloom_content";
+    const char* bloom_file = "/home/naruto/StudyDir/SimpleLSMTree/config/bloom_content";
 
     uint64_t MurmurHash2_x64 (const void* key, int len, uint32_t seed)
     {
@@ -73,7 +73,7 @@ SimpleBloomFilter::SimpleBloomFilter(uint64_t expect_key_num, uint8_t hash_func_
 
 int SimpleBloomFilter::LoadToMem(const char *filename) {
     Reader reader_handle;
-    std::ifstream& reader = reader_handle.GetReader();
+    std::fstream& reader = reader_handle.GetReader();
 
     reader.open(filename, std::ios::binary | std::ios::in);
     if (!reader) {
@@ -90,9 +90,9 @@ int SimpleBloomFilter::LoadToMem(const char *filename) {
 
 SimpleBloomFilter::~SimpleBloomFilter() {
     Writer writer_handle;
-    std::ofstream& writer = writer_handle.GetWriter();
+    std::fstream& writer = writer_handle.GetWriter();
 
-    writer.open(bloom_file, std::ios::binary | std::ios::in | std::ios::trunc);
+    writer.open(bloom_file, std::ios::binary | std::ios::out | std::ios::trunc);
     if (writer) {
         writer.write(begin_, byte_nums_);
     }

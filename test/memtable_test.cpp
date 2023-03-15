@@ -108,24 +108,26 @@ void MemTableTestOfMuiltThread() {
     SearchThreadEntry(1, 20000);
 
     //std::thread insertThread3(InsertThreadEntry , 3, 20001, 30000);
-    std::thread deleteThread1(DeleteThreadEntry, 10001, 20000);
-    std::thread searchThread(SearchThreadEntry , 1, 10000);
 
-    deleteThread1.join();
-    searchThread.join();
+//    std::thread deleteThread1(DeleteThreadEntry, 10001, 20000);
+//    std::thread searchThread(SearchThreadEntry , 1, 10000);
+
+//    deleteThread1.join();
+//    searchThread.join();
 
     //should assert fail in here
-    SearchThreadEntry(10001, 10001);
+    //SearchThreadEntry(10001, 10001);
 
     std::cout << "MemTableTestOfMulitThread end!" << std::endl;
 }
 
 void SmokeTestOfDump(const char* filename) {
-    std::cout << "SmokeTestOfDump begin!" << std::endl;
-
+//    std::cout << "SmokeTestOfDump begin!" << std::endl;
+//
 //    AddThreadEntry(0, 1000);
 //
-//    auto status = mb->Dump(filename);
+//    std::atomic<uint64_t> t = 0;
+//    auto status = mb->Dump("/home/naruto/StudyDir/SimpleLSMTree/storage/test", t);
 //    assert(status == MemTable::Status::kSuccess);
 
     std::ifstream reader("/home/naruto/StudyDir/SimpleLSMTree/storage/test", std::ios::in | std::ios::binary);
@@ -145,9 +147,9 @@ void SmokeTestOfDump(const char* filename) {
     reader.read(reinterpret_cast<char*>(&key_size), 8);
     assert(key_size == 1);
 
-    char key;
-    reader.read(&key, key_size);
-    std::cout << "key == " << key << std::endl;
+    char key1[10] = { '\0' };
+    reader.read(key1, key_size);
+    std::cout << "key == " << key1 << std::endl;
     //assert(std::strcmp(key, "1") == 0);
 
     uint64_t value_size = 0;
@@ -155,10 +157,30 @@ void SmokeTestOfDump(const char* filename) {
 
     assert(value_size == 1);
 
-    char value[10] = { '\0' };
-    reader.read(value, value_size);
+    char value1[10] = { '\0' };
+    reader.read(value1, value_size);
     //assert(std::strcmp(value, "1") == 0);
-    std::cout << "value = " << value << std::endl;
+    std::cout << "value = " << value1 << std::endl;
+
+    reader.read(&flag, 1);
+    assert(flag == 0);
+
+
+    reader.read(reinterpret_cast<char*>(&key_size), 8);
+    assert(key_size == 1);
+
+    char key2[10] = { '\0' };
+    reader.read(key2, key_size);
+    std::cout << "key == " << key2 << std::endl;
+    //assert(std::strcmp(key, "1") == 0);
+
+    reader.read(reinterpret_cast<char*>(&value_size), 8);
+    assert(value_size == 1);
+
+    char value2[10] = { '\0' };
+    reader.read(value2, value_size);
+    //assert(std::strcmp(value, "1") == 0);
+    std::cout << "value = " << value2 << std::endl;
 
     std::cout << "SmokeTestOfDump end!" << std::endl;
 }
@@ -179,10 +201,12 @@ void RdBufTest() {
 
 int main() {
     mb = new MemTable();
+    mb->Ref();
     //MemTableTestOfSingleThread();
     //MemTableTestOfMuiltThread();
-    //SmokeTestOfDump("/home/naruto/StudyDir/SimpleLSMTree/storage/test");
-    RdBufTest();
+    SmokeTestOfDump("/home/naruto/StudyDir/SimpleLSMTree/storage/test");
+    //RdBufTest();
 
+    mb->UnRef();
     return 0;
 }

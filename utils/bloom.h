@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <mutex>
 
 // TODO : implement a complete and robust bloom filter
 
@@ -27,6 +28,7 @@ private:
 
     void BloomHash(const void* key, int len);
 
+    //TODO: need threadsafe
     void Setbit(uint64_t bit_loc);
 
     bool IsSetbit(uint64_t bit_loc);
@@ -36,6 +38,7 @@ private:
     char* begin_;
     uint8_t hash_func_nums_;
     std::vector<uint64_t> cur_hash_bit_loc_;
+    std::mutex mutex_;
 };
 
 

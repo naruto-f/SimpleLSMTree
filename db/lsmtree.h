@@ -29,11 +29,15 @@ class LsmTree : public Db {
 public:
     LsmTree(uint32_t line_cache_capacity, uint32_t block_cache_capacity);
 
-    void Add(const std::string& key, const std::string& value) override;
+    ~LsmTree();
 
-    void Delete(const std::string& key) override;
+    bool Add(const std::string& key, const std::string& value) override;
+
+    bool Delete(const std::string& key) override;
 
     bool Get(const std::string& key, std::shared_ptr<std::string>& value) override;
+
+    void Close() override;
 
 private:
     void BackgroundWorkerThreadEntry();
@@ -60,11 +64,22 @@ private:
     void TryBestDoDelayDelete();
 
     bool Log(uint8_t type, const std::string& key, const std::string& value);
+
+    void ReadMetaInfo();
+
+    bool WriteMetaInfoToDisk();
+
+    bool CheckLogAndRedoIfPossible();
+
+    bool RedoLog(const std::string& log_filename);
+
+    bool Valid();
 private:
     using CacheId_t = uint64_t;
     using L1Cache = Cache<std::string, std::shared_ptr<std::string>>;
     using L2Cache = Cache<CacheId_t, std::shared_ptr<Block>>;
 
+    std::atomic<bool> valid_flag_;
     SimpleBloomFilter* bloom_;
     MemTable* table_;
     std::deque<MemTable*> background_tables_;
