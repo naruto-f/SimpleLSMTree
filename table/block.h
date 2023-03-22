@@ -41,6 +41,11 @@ public:
         bool Valid() {
             return block_ && cur_index < block_->key_value_info_.size();
         }
+
+        uint64_t KeySize() {
+            assert(Valid());
+            return block_->key_value_info_.size();
+        }
     private:
         Block* block_;
         uint32_t cur_index;

@@ -30,6 +30,7 @@ int lsmtree::Block::PraseBlock() {
         cur_offset += (1 + 2 * sizeof(uint64_t) + key_size + value_size);
     }
 
+    assert(cur_offset == block_size_);
     return 0;
 }
 

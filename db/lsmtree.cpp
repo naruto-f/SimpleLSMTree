@@ -21,7 +21,7 @@ namespace {
 
     enum {
         kMaxLevel = 4,
-        kMaxLenApproximatePerSstable = 4 * 1024 * 1024
+        kMaxLenApproximatePerSstable = 2 * 1024 * 1024
     };
 
     enum UpdateType : uint8_t {
@@ -42,19 +42,19 @@ namespace {
         std::filesystem::path path(filename);
 
         if (std::filesystem::exists(path)) {
-            Writer writer;
-            auto& write = writer.GetWriter();
-
-            FileLock flock(dynamic_cast<std::fstream&>(write), F_WRLCK);
-            if (!flock.LockWithoutWait()) {
-                return false;
-            }
+//            Writer writer;
+//            auto& write = writer.GetWriter();
+//
+//            FileLock flock(dynamic_cast<std::fstream&>(write), F_WRLCK);
+//            if (!flock.LockWithoutWait()) {
+//                return false;
+//            }
+            std::filesystem::remove(path);
         }
-        std::filesystem::remove(path);
+        //std::filesystem::remove(path);
 
         return true;
     }
-
 }
 
 struct lsmtree::MergeNode {
@@ -136,7 +136,7 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
 
 
     ///⑤Binary search block index that key may exist, foreach sstable from new to old, and lookup at L2Cache if possible.
-    std::pair<uint64_t, uint64_t> range_of_file_pre_level[kMaxLevel + 1] = {{0, 0}};
+    std::pair<int64_t, int64_t> range_of_file_pre_level[kMaxLevel + 1] = {{0, 0}};
     std::unordered_set<std::string> need_locked_files;
     {
         std::lock_guard<std::mutex> lock(level_files_mutex);
@@ -170,7 +170,7 @@ bool lsmtree::LsmTree::Get(const std::string& key, std::shared_ptr<std::string>&
             SSTable cur_table(filename.c_str(), &block_cache_);
             assert(cur_table.Valid());
 
-            int res = cur_table.Get(std::string_view(key.data(), key.size()), value);
+            res = cur_table.Get(std::string_view(key.data(), key.size()), value);
             if (res == 0 || res == -2) {
                 break;
             }
@@ -218,9 +218,9 @@ bool lsmtree::LsmTree::Add(const std::string &key, const std::string &value) {
 
         Log(UpdateType::kAdd, key, value);
         table_->Add(key, value);
+        bloom_->Insert(key);
     }
 
-    bloom_->Insert(key);
     line_cache_.Insert(key, std::make_shared<std::string>(value));
     return true;
 }
@@ -238,9 +238,9 @@ bool lsmtree::LsmTree::Delete(const std::string &key) {
 
         Log(UpdateType::kAdd, key, "");
         table_->Delete(key);
+        bloom_->Insert(key);
     }
 
-    bloom_->Insert(key);
     line_cache_.Insert(key, nullptr);
     return true;
 }
@@ -255,11 +255,11 @@ void lsmtree::LsmTree::BackgroundWorkerThreadEntry() {
         while (!background_tables_.empty()) {
             auto table = background_tables_.front();
             background_tables_.pop_front();
-            table->UnRef();
             lock.unlock();
 
             //TODO: how to recover from disk write failures or low space
-            assert(MergeMemtableToDisk(table));    //if return false, this storage system is not in Consistent state, now we stop system immediately.
+            assert(MergeMemtableToDisk(table));  //if return false, this storage system is not in Consistent state, now we stop system immediately.
+            table->UnRef();
 
             lock.lock();
         }
@@ -270,21 +270,25 @@ void lsmtree::LsmTree::BackgroundWorkerThreadEntry() {
             break;
         }
     }
+
+    while (!file_need_delete_.empty()) {
+        TryBestDoDelayDelete();
+    }
 }
 
 void lsmtree::LsmTree::MemtableChange() {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         background_tables_.push_back(table_);
-        table_->Ref();
+
         log_suffix_max.fetch_add(1, std::memory_order_acq_rel);
+
+        MemTable* new_table = new MemTable();
+        assert(new_table);
+
+        table_ = new_table;
         cond_.notify_all();
     }
-
-    MemTable* new_table = new MemTable();
-    assert(new_table);
-
-    table_ = new_table;
 }
 
 bool lsmtree::LsmTree::MergeMemtableToDisk(MemTable* table) {
@@ -346,7 +350,7 @@ lsmtree::LsmTree::LsmTree(uint32_t line_cache_capacity, uint32_t block_cache_cap
                             line_cache_(line_cache_capacity),
                             block_cache_(block_cache_capacity) {
     //CheckSstableInfo();
-    table_->Ref();
+    //table_->Ref();
     ReadMetaInfo();
     assert(Valid());
 
@@ -384,12 +388,13 @@ bool lsmtree::LsmTree::MergeRangeOfSstable(int level, int start_index, int end_i
     int epoch = SstableNumsPerLevel[0] / 2;   //merge level0 max-file-nums files every time
 
     for (int i = 0; i < epoch; ++i) {
-        lists.push_back(MergeTwoSstable(level, start_index + 2 * i, 2 * i + 1, all_alloc_block_ptrs));
+        lists.push_back(MergeTwoSstable(level, start_index + 2 * i, start_index + 2 * i + 1, all_alloc_block_ptrs));
     }
 
     std::list<lsmtree::MergeNode> older_list = MergeTwoMergerdList(lists[0], lists[1]);
     std::list<lsmtree::MergeNode> newer_list = MergeTwoMergerdList(lists[2], lists[3]);
     std::list<lsmtree::MergeNode> last_list = MergeTwoMergerdList(older_list, newer_list);
+    assert(older_list.size() + newer_list.size() == last_list.size());
 
     bool res = DumpToNextLevel(level, last_list);
     for (auto block_ptr : all_alloc_block_ptrs) {
@@ -410,46 +415,73 @@ std::list<lsmtree::MergeNode> lsmtree::LsmTree::MergeTwoSstable(int level, int o
 
     lsmtree::SSTable older_table(older_table_name.c_str(), nullptr), newer_table(newer_table_name.c_str(), nullptr);
     lsmtree::SSTable::Iterator older_iter(&older_table), newer_iter(&newer_table);
-    lsmtree::Block::Iterator older_block_iter(nullptr), newer_block_iter(nullptr);
+    lsmtree::Block::Iterator older_block_iter = older_iter.GetBlockIterator(), newer_block_iter = newer_iter.GetBlockIterator();
+    older_iter.Next();
+    newer_iter.Next();
 
     std::vector<Block*>& old_blocks = older_iter.GetAllocBlockAdress();
     std::vector<Block*>& new_blocks = newer_iter.GetAllocBlockAdress();
 
     std::list<lsmtree::MergeNode> merge_list;
 
-    while (older_iter.Valid() && newer_iter.Valid()) {
-        if (older_iter.Valid() && !older_block_iter.Valid()) {
-            older_block_iter = older_iter.GetBlockIterator();
-            older_iter.Next();
+    while (newer_block_iter.Valid() && older_block_iter.Valid()) {
+        std::string_view older_key = older_block_iter.GetKey();
+        std::string_view newer_key = newer_block_iter.GetKey();
+
+        struct MergeNode node;
+        if (older_key == newer_key) {
+            node.key = newer_key;
+            node.value = newer_block_iter.GetValue();
+            node.flag = newer_block_iter.GetFlag();
+            merge_list.push_back(node);
+
+            older_block_iter.Next();
+            newer_block_iter.Next();
+        } else if (older_key > newer_key) {
+            node.key = newer_key;
+            node.value = newer_block_iter.GetValue();
+            node.flag = newer_block_iter.GetFlag();
+            merge_list.push_back(node);
+
+            newer_block_iter.Next();
+        } else {
+            node.key = older_key;
+            node.value = older_block_iter.GetValue();
+            node.flag = older_block_iter.GetFlag();
+            merge_list.push_back(node);
+
+            older_block_iter.Next();
         }
 
-        if (newer_iter.Valid() && !newer_block_iter.Valid()) {
-            newer_block_iter = newer_iter.GetBlockIterator();
-            newer_iter.Next();
+        if (!newer_block_iter.Valid()) {
+            if (!newer_iter.Valid()) {
+                break;
+            } else {
+                newer_block_iter = newer_iter.GetBlockIterator();
+                newer_iter.Next();
+            }
         }
 
-        while (older_block_iter.Valid() && newer_block_iter.Valid()) {
-            std::string_view older_key = older_block_iter.GetKey();
-            std::string_view newer_key = newer_block_iter.GetKey();
+        if (!older_block_iter.Valid()) {
+            if (!older_iter.Valid()) {
+                break;
+            } else {
+                older_block_iter = older_iter.GetBlockIterator();
+                older_iter.Next();
+            }
+        }
+    }
+
+    if (older_block_iter.Valid()) {
+        while (older_iter.Valid() || older_block_iter.Valid()) {
+            if (!older_block_iter.Valid() && older_iter.Valid()) {
+                older_block_iter = older_iter.GetBlockIterator();
+                older_iter.Next();
+            }
 
             struct MergeNode node;
-            if (older_key == newer_key) {
-                node.key = newer_key;
-                node.value = newer_block_iter.GetValue();
-                node.flag = newer_block_iter.GetFlag();
-                merge_list.push_back(node);
-
-                older_block_iter.Next();
-                newer_block_iter.Next();
-            } else if (older_key > newer_key) {
-                node.key = newer_key;
-                node.value = newer_block_iter.GetValue();
-                node.flag = newer_block_iter.GetFlag();
-                merge_list.push_back(node);
-
-                newer_block_iter.Next();
-            } else {
-                node.key = older_key;
+            while (older_block_iter.Valid()) {
+                node.key = older_block_iter.GetKey();
                 node.value = older_block_iter.GetValue();
                 node.flag = older_block_iter.GetFlag();
                 merge_list.push_back(node);
@@ -457,41 +489,43 @@ std::list<lsmtree::MergeNode> lsmtree::LsmTree::MergeTwoSstable(int level, int o
                 older_block_iter.Next();
             }
         }
-    }
+    } else {
+        while (newer_iter.Valid() || newer_block_iter.Valid()) {
+            if (!newer_block_iter.Valid() && newer_iter.Valid()) {
+                newer_block_iter = newer_iter.GetBlockIterator();
+                newer_iter.Next();
+            }
 
-    lsmtree::SSTable::Iterator seq_iter = older_iter.Valid() ? older_iter : newer_iter;
-    lsmtree::Block::Iterator seq_block_iter = older_iter.Valid() ? older_block_iter : newer_block_iter;
-    while (seq_iter.Valid()) {
-        struct MergeNode node;
-        while (seq_block_iter.Valid()) {
-            node.key = seq_block_iter.GetKey();
-            node.value = seq_block_iter.GetValue();
-            node.flag = seq_block_iter.GetFlag();
-            merge_list.push_back(node);
+            struct MergeNode node;
+            while (newer_block_iter.Valid()) {
+                node.key = newer_block_iter.GetKey();
+                node.value = newer_block_iter.GetValue();
+                node.flag = newer_block_iter.GetFlag();
+                merge_list.push_back(node);
 
-            seq_block_iter.Next();
+                newer_block_iter.Next();
+            }
         }
-
-        seq_iter.Next();
     }
 
     alloc_blocks.insert(alloc_blocks.end(), old_blocks.begin(), old_blocks.end());
     alloc_blocks.insert(alloc_blocks.end(), new_blocks.begin(), new_blocks.end());
+
     return std::move(merge_list);
 }
 
 std::list<lsmtree::MergeNode> lsmtree::LsmTree::MergeTwoMergerdList(std::list<MergeNode>& older_list, std::list<MergeNode>& newer_list) {
     std::list<lsmtree::MergeNode> merge_list;
-    std::list<lsmtree::MergeNode>::const_iterator older_list_iter = older_list.begin(), newer_list_iter = newer_list.begin();
+    std::list<lsmtree::MergeNode>::const_iterator older_list_iter = older_list.cbegin(), newer_list_iter = newer_list.cbegin();
 
-    while (older_list_iter != older_list.end() || newer_list_iter != newer_list.end()) {
-        if (older_list_iter == older_list.end()) {
+    while (older_list_iter != older_list.cend() || newer_list_iter != newer_list.cend()) {
+        if (older_list_iter == older_list.cend()) {
             merge_list.push_back(*newer_list_iter++);
-        } else if (newer_list_iter == newer_list.end()) {
+        } else if (newer_list_iter == newer_list.cend()) {
             merge_list.push_back(*older_list_iter++);
         } else {
             if (older_list_iter->key == newer_list_iter->key) {
-                merge_list.push_back(*older_list_iter++);
+                merge_list.push_back(*newer_list_iter);
                 ++older_list_iter;
                 ++newer_list_iter;
             } else if (older_list_iter->key > newer_list_iter->key) {
@@ -511,7 +545,7 @@ bool lsmtree::LsmTree::DumpToNextLevel(int level, std::list<MergeNode> &list) {
         return false;
     }
 
-    uint64_t start_index = level_suffix_max[level + 1] + 1;
+    uint64_t start_index = level_suffix_max[level + 1];
 
     std::string target_level_dirname_prefix = dir_name + std::string("level") + std::to_string(level + 1) + "/sstable";
 
@@ -520,7 +554,7 @@ bool lsmtree::LsmTree::DumpToNextLevel(int level, std::list<MergeNode> &list) {
         std::string filename = target_level_dirname_prefix + std::to_string(start_index);
         ++start_index;
 
-        bool res = DumpToOneFile(filename, iter);
+        bool res = DumpToOneFile(filename, iter, list.cend());
         if (!res) {
             return false;
         }
@@ -531,14 +565,14 @@ bool lsmtree::LsmTree::DumpToNextLevel(int level, std::list<MergeNode> &list) {
         std::lock_guard<std::mutex> lock(level_files_mutex);
         level_suffix_min[level] += SstableNumsPerLevel[0];
         level_file_nums[level] -= SstableNumsPerLevel[0];
-        level_file_nums[level + 1] += SstableNumsPerLevel[0];
-        level_suffix_max[level + 1] += SstableNumsPerLevel[0];
+        level_file_nums[level + 1] += (start_index - level_suffix_max[level + 1]);
+        level_suffix_max[level + 1] = start_index;
     }
 
     return true;
 }
 
-bool lsmtree::LsmTree::DumpToOneFile(const std::string &filename, std::list<MergeNode>::const_iterator& iter) {
+bool lsmtree::LsmTree::DumpToOneFile(const std::string &filename, std::list<MergeNode>::const_iterator& iter, std::list<MergeNode>::const_iterator cend) {
     Writer file_writer;
     std::fstream& writer = file_writer.GetWriter();
     writer.open(filename, std::ios::out | std::ios::binary | std::ios::trunc);
@@ -563,26 +597,25 @@ bool lsmtree::LsmTree::DumpToOneFile(const std::string &filename, std::list<Merg
     const char* value;
 
     ///write data blocks to file.
-    while (iter != std::list<MergeNode>::const_iterator(nullptr)) {
-        char* write_start = const_cast<char*>(iter->key.data()) - 3;
+    while (iter != cend) {
+        char* write_start = const_cast<char*>(iter->key.data()) - 9;
         int write_size = 1 + 2 * sizeof(uint64_t) + iter->key.size() + iter->value.size();
 
         writer.write(write_start, write_size);
         if (writer.fail()) {
             return false;
         }
+        writer.flush();
 
         cur_block_offset += write_size;
         if (cur_block_offset >= MaxBlockSize) {
             cur_table_offset += cur_block_offset;
-            cur_block_offset = 0;
             block_offset.push_back(cur_table_offset);
             last_key_of_blocks.push_back({iter->key.data(), iter->key.size()});
             block_size.push_back(cur_block_offset);
+            cur_block_offset = 0;
 
-            writer.flush();
-
-            uint64_t all_size = cur_block_offset + last_key_of_blocks.size() * 4 * sizeof(uint64_t)
+            uint64_t all_size = cur_table_offset + last_key_of_blocks.size() * 4 * sizeof(uint64_t)
                                 + std::accumulate(last_key_of_blocks.begin(), last_key_of_blocks.end(), static_cast<uint64_t>(0), [](uint64_t sum, const std::pair<const char*, uint64_t>& rhs) {
                                     return sum + rhs.second;
                                 }) + 3 * sizeof(uint64_t);
@@ -663,10 +696,12 @@ void lsmtree::LsmTree::TryBestDoDelayDelete() {
         return;
     }
 
+    ///can't delete element when foreach hashmap using iterator
+    std::vector<std::string> sstable_can_delete;
     for (auto& file_tag : file_need_delete_) {
         {
             std::lock_guard<std::mutex> lock(level_files_mutex);
-            if (!level_file_refs.count(file_tag)) {
+            if (level_file_refs.count(file_tag)) {
                 continue;
             }
         }
@@ -680,9 +715,14 @@ void lsmtree::LsmTree::TryBestDoDelayDelete() {
 
             std::string path = dir_name + std::string("level") + level + std::string("/") + filename_prefix + suffix;
             if (TestFileCanDelete(path)) {
-                file_need_delete_.erase(file_tag);
+                sstable_can_delete.push_back(file_tag);
+                //file_need_delete_.erase(file_tag);
             }
         }
+    }
+
+    for (auto& file_tag : sstable_can_delete) {
+        file_need_delete_.erase(file_tag);
     }
 }
 
@@ -769,7 +809,11 @@ void lsmtree::LsmTree::ReadMetaInfo() {
             return;
         }
 
-        assert(level_suffix_max[i] == level_suffix_min[i] || level_file_nums[i] == (level_suffix_max[i] - level_suffix_min[i] + 1));
+        assert(level_suffix_max[i] == level_suffix_min[i] || level_file_nums[i] == (level_suffix_max[i] - level_suffix_min[i]));
+        if (level_suffix_max[i] == level_suffix_min[i]) {
+            level_suffix_max[i] = level_suffix_min[i] = 0;
+            level_file_nums[i] = 0;
+        }
     }
 
     reader.read(reinterpret_cast<char*>(&log_suffix_min), sizeof(uint32_t));
@@ -808,7 +852,7 @@ bool lsmtree::LsmTree::WriteMetaInfoToDisk() {
     }
 
     for (int i = 0; i <= kMaxLevel; ++i) {
-        assert(level_suffix_max[i] == level_suffix_min[i] ||level_file_nums[i] == (level_suffix_max[i] - level_suffix_min[i] + 1));
+        assert(level_suffix_max[i] == level_suffix_min[i] || level_file_nums[i] == (level_suffix_max[i] - level_suffix_min[i]));
         writer.write(reinterpret_cast<char*>(&level_file_nums[i]), sizeof(uint32_t));
         if (writer.fail()) {
             return false;
@@ -859,7 +903,10 @@ bool lsmtree::LsmTree::CheckLogAndRedoIfPossible() {
                     ++log_suffix_min;
                 } else {
                     //TODO: rename log to 0.log
-                    //std::filesystem::rename(path, 0.log)
+                    std::string new_log_filename = config_dir_name + std::string("log/0.log");
+                    std::filesystem::path new_log_path(new_log_filename);
+                    std::filesystem::rename(path, new_log_path);
+                    log_suffix_min = log_suffix_max = 0;
                     break;
                 }
             } else {

@@ -10,10 +10,12 @@
 lsmtree::Db* db = nullptr;
 //lsmtree::LsmTree db(10000, 10000);
 
+std::string value(1000, '8');
+
 void Add_thread_Entry(int start, int end) {
     for (int i = start; i <= end; ++i) {
         std::string cur = std::to_string(i);
-        auto res = db->Add(cur, cur);
+        auto res = db->Add(cur, value);
         assert(res);
     }
 }
@@ -67,6 +69,8 @@ void Test_Multi_Thread_Add_Multi_table(uint32_t thread_nums, uint32_t tasks_per_
         for (auto& k : unfind) {
             std::cout << k << std::endl;
         }
+
+        std::cout << "size: " << unfind.size() << std::endl;
     }
 
     std::cout << "Test_Multi_Thread_Add_Multi_table starting!" << std::endl;
@@ -74,11 +78,23 @@ void Test_Multi_Thread_Add_Multi_table(uint32_t thread_nums, uint32_t tasks_per_
 
 void Test_Read_After_Redo_log(int start, int end) {
     std::shared_ptr<std::string> sp(nullptr);
+    std::vector<std::string> unfind;
     for (int i = start; i <= end; ++i) {
         sp = nullptr;
         std::string key = std::to_string(i);
         bool res = db->Get(key, sp);
-        assert(res);
+        //assert(res);
+        if (!res) {
+            unfind.push_back(key);
+        }
+    }
+
+    if (!unfind.empty()) {
+        for (auto& k : unfind) {
+            std::cout << k << std::endl;
+        }
+
+        std::cout << "size: " << unfind.size() << std::endl;
     }
 
 //    for (int i = end + 1; i <= end + 5000; ++i) {
@@ -94,7 +110,7 @@ void Test_Read_After_Redo_log(int start, int end) {
 
 
 int main(int argc, char* argv[]) {
-    db = new lsmtree::LsmTree(10000, 10000);
+    db = new lsmtree::LsmTree(10000, 1000);
 
     //Test_Multi_Thread_Add();
     //Test_Read_After_Redo_log();

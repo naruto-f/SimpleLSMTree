@@ -39,7 +39,7 @@ public:
     Status Dump(const std::string& filename, std::atomic<uint64_t>& block_id) const;
 
     ///
-    bool IsFull() { return estimate_size_ >= 4 * 1024 * 1024; }   //4MB
+    bool IsFull() { return estimate_size_ >= 2 * 1024 * 1024; }   //2MB
 
     ///
     void Ref();

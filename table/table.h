@@ -54,6 +54,10 @@ public:
             uint64_t block_size = table_->data_index_block_[cur_index_].block_handle_.size_;
             uint64_t block_offset = table_->data_index_block_[cur_index_].block_handle_.offset_;
             char* block_begin = new char[block_size];
+            auto& reader = table_->reader_.GetReader();
+            reader.seekg(block_offset, std::ios::beg);
+            reader.read(block_begin, block_size);
+            assert(reader && reader.good());
 
             cur_block_ = new Block(table_->data_index_block_[cur_index_].id_, block_begin, block_size);
             block_ptr_vec.push_back(cur_block_);

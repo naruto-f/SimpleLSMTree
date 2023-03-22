@@ -59,7 +59,7 @@ private:
 
     bool DumpToNextLevel(int level, std::list<MergeNode>& list);
 
-    bool DumpToOneFile(const std::string &filename, std::list<MergeNode>::const_iterator& iter);
+    bool DumpToOneFile(const std::string &filename, std::list<MergeNode>::const_iterator& iter, std::list<MergeNode>::const_iterator cend);
 
     void TryBestDoDelayDelete();
 

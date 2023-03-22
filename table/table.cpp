@@ -119,9 +119,15 @@ int lsmtree::SSTable::Get(const std::string_view &key, std::shared_ptr<std::stri
 int lsmtree::SSTable::GetBlockIndexOfKeyMayIn(const std::string_view &key) const {
     std::size_t left = 0, right = data_index_block_.size();
 
+//    if (key <= data_index_block_[0].key_) {
+//        return 0;
+//    }
+
     while (left < right) {
         auto mid = left + (right - left) / 2;
-        if (data_index_block_[mid].key_ < key) {
+        if (data_index_block_[mid].key_ == key) {
+            return mid;
+        } else if (data_index_block_[mid].key_ < key) {
             left = mid + 1;
         } else {
             right = mid;

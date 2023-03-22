@@ -62,7 +62,7 @@ lsmtree::MemTable::Status lsmtree::MemTable::Delete(const std::string& key) {
     return Status::kSuccess;
 }
 
-lsmtree::MemTable::MemTable() : refs_(0), estimate_size_(3 * sizeof(uint64_t)), cur_block_size_(0) {
+lsmtree::MemTable::MemTable() : refs_(1), estimate_size_(3 * sizeof(uint64_t)), cur_block_size_(0) {
 
 }
 
